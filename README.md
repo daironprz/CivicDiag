@@ -1,5 +1,7 @@
 # CivicDiag
 
+Open source under the MIT License.
+
 OBD-II diagnostic suite for a **1999 Honda Civic EX coupe** (D16Y8) — runs on
 any Windows laptop with a cheap ELM327 USB adapter. Also works on any other
 1996+ OBD-II vehicle.
