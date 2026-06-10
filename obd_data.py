@@ -336,6 +336,476 @@ DTC_DESCRIPTIONS = {
     "P1794": "A/T barometric pressure signal failure",
 }
 
+# ---------------------------------------------------------------------
+# Virtual PIDs (not real OBD PIDs — sourced from the adapter itself)
+# ---------------------------------------------------------------------
+
+PID_BATT = 0x1000  # adapter-measured battery voltage via ATRV
+
+VIRTUAL_PIDS = {
+    PID_BATT: ("Battery voltage (adapter)", "V", 0, None),
+}
+
+
+def pid_def(pid):
+    """Return (name, unit, nbytes, decode) for a real or virtual PID."""
+    return PIDS.get(pid) or VIRTUAL_PIDS.get(pid)
+
+
+# ---------------------------------------------------------------------
+# Rich DTC knowledge base — severity, drivability, common causes on a
+# 1996-2000 Civic, what to check first, and related live-data PIDs.
+# Severity: 1 = Low, 2 = Moderate, 3 = High, 4 = Severe.
+# ---------------------------------------------------------------------
+
+SEVERITY_NAMES = {1: "Low", 2: "Moderate", 3: "High", 4: "Severe"}
+
+_TRIM_PIDS = [0x06, 0x07, 0x0B, 0x0C, 0x14, 0x15]
+_MISFIRE_PIDS = [0x0C, 0x04, 0x06, 0x07, 0x0E, 0x05, 0x14]
+_O2_PIDS = [0x14, 0x15, 0x06, 0x07, 0x0C]
+_TEMP_PIDS = [0x05, 0x0C, 0x0F]
+
+DTC_INFO = {
+    # ---- MAP / intake ----
+    "P0106": dict(sev=2, drive="OK to drive short-term; expect poor mileage "
+                  "and hesitation.",
+                  causes=["Cracked or loose vacuum hose to the MAP sensor",
+                          "Intake manifold vacuum leak",
+                          "Failing MAP sensor"],
+                  check=["Inspect the small vacuum hose from the throttle "
+                         "body to the MAP sensor for cracks",
+                         "With ignition ON engine off, MAP should read close "
+                         "to barometric (~101 kPa); at idle ~30-40 kPa"],
+                  pids=[0x0B, 0x0C, 0x06, 0x07, 0x11]),
+    "P0107": dict(sev=2, drive="Driveable but the ECU falls back to a fixed "
+                  "map — sluggish and rich.",
+                  causes=["MAP sensor unplugged or wiring open",
+                          "Failed MAP sensor"],
+                  check=["Re-seat the MAP sensor connector on the throttle "
+                         "body", "Check for 5V reference at the connector"],
+                  pids=[0x0B, 0x0C]),
+    "P0108": dict(sev=2, drive="Driveable with reduced performance.",
+                  causes=["Shorted MAP sensor signal", "Failed sensor"],
+                  check=["Re-seat the MAP connector; inspect wiring chafe "
+                         "near the throttle body"],
+                  pids=[0x0B, 0x0C]),
+    # ---- IAT / ECT ----
+    "P0111": dict(sev=1, drive="Safe to drive.",
+                  causes=["IAT sensor drifting out of spec",
+                          "Poor connector contact"],
+                  check=["IAT should read close to ambient when cold — "
+                         "compare with coolant temp after sitting overnight"],
+                  pids=[0x0F, 0x05]),
+    "P0112": dict(sev=1, drive="Safe to drive; may run slightly rich.",
+                  causes=["IAT shorted", "Wrong/failed sensor"],
+                  check=["Unplug the IAT (in the intake tube) and see if the "
+                         "reading changes to -40"], pids=[0x0F]),
+    "P0113": dict(sev=1, drive="Safe to drive; may run slightly lean.",
+                  causes=["IAT unplugged or open circuit"],
+                  check=["Re-seat the IAT connector on the intake tube"],
+                  pids=[0x0F]),
+    "P0116": dict(sev=2, drive="Watch the temp gauge; OK for short trips.",
+                  causes=["Stuck-open thermostat (very common)",
+                          "Failing ECT sensor", "Low coolant"],
+                  check=["Watch coolant temp in Live Data — it should climb "
+                         "steadily to ~85-95°C and hold",
+                         "Check coolant level when cold"],
+                  pids=_TEMP_PIDS),
+    "P0117": dict(sev=2, drive="Driveable; cold-start enrichment will be "
+                  "wrong (hard starts, rich running).",
+                  causes=["ECT sensor shorted", "Wiring pinched"],
+                  check=["Re-seat the ECT connector (back of the head, near "
+                         "the distributor)"], pids=[0x05]),
+    "P0118": dict(sev=2, drive="Driveable; may idle poorly when cold and "
+                  "the fans may run constantly.",
+                  causes=["ECT unplugged/open", "Corroded connector"],
+                  check=["Re-seat the ECT connector; look for green "
+                         "corrosion in the plug"], pids=[0x05]),
+    "P0125": dict(sev=2, drive="Safe to drive; mileage suffers and the cat "
+                  "may not reach temp.",
+                  causes=["Stuck-open thermostat (classic '90s Honda "
+                          "failure)", "Low coolant", "Lazy ECT sensor"],
+                  check=["Live Data: does coolant temp plateau below ~80°C "
+                         "on the highway? Replace the thermostat"],
+                  pids=_TEMP_PIDS),
+    "P0128": dict(sev=2, drive="Safe to drive.",
+                  causes=["Stuck-open thermostat", "Low coolant"],
+                  check=["Replace the thermostat (cheap, easy on a D16)"],
+                  pids=_TEMP_PIDS),
+    # ---- TPS ----
+    "P0121": dict(sev=2, drive="Driveable; possible hesitation and odd "
+                  "shifting on automatics.",
+                  causes=["Worn TPS track", "Loose TPS"],
+                  check=["Live Data: throttle % should sweep smoothly 0→100 "
+                         "with no jumps as you slowly press the pedal"],
+                  pids=[0x11, 0x0C]),
+    "P0122": dict(sev=2, drive="Driveable with poor throttle response.",
+                  causes=["TPS signal shorted low", "Unplugged TPS"],
+                  check=["Re-seat the TPS connector on the throttle body"],
+                  pids=[0x11]),
+    "P0123": dict(sev=2, drive="Driveable; may hold high idle.",
+                  causes=["TPS signal shorted high"],
+                  check=["Re-seat the TPS connector; inspect wiring"],
+                  pids=[0x11]),
+    # ---- O2 sensors ----
+    "P0131": dict(sev=2, drive="Safe to drive; runs rich, wastes fuel, can "
+                  "eventually damage the cat.",
+                  causes=["Aged primary O2 sensor", "Exhaust leak before "
+                          "the sensor", "Wiring chafe"],
+                  check=["Live Data: B1S1 should swing 0.1-0.9V at warm "
+                         "idle. Stuck low = lean or dead sensor"],
+                  pids=_O2_PIDS),
+    "P0133": dict(sev=2, drive="Safe to drive short-term.",
+                  causes=["Lazy/aged primary O2 sensor (most common)",
+                          "Exhaust leak", "Contaminated sensor"],
+                  check=["Watch B1S1 voltage: it should cross 0.45V several "
+                         "times per second at 2000 rpm. Slow swings = "
+                         "replace the sensor"],
+                  pids=_O2_PIDS),
+    "P0134": dict(sev=2, drive="Safe to drive; closed-loop fueling is lost.",
+                  causes=["Unplugged O2 sensor", "Blown O2 heater fuse",
+                          "Dead sensor"],
+                  check=["Re-seat the O2 connector; check fuse #15 (ECU)"],
+                  pids=_O2_PIDS),
+    "P0135": dict(sev=2, drive="Safe to drive; slow to enter closed loop.",
+                  causes=["O2 heater element burned out", "Wiring/fuse"],
+                  check=["Sensor heater should draw ~1-2A cold; check the "
+                         "heater fuse"], pids=_O2_PIDS),
+    "P0136": dict(sev=1, drive="Safe to drive.",
+                  causes=["Aged secondary O2", "Exhaust leak at the cat"],
+                  check=["B1S2 should be relatively steady (~0.6V) once "
+                         "warm; constant fast switching = weak cat too"],
+                  pids=[0x15, 0x14]),
+    "P0141": dict(sev=1, drive="Safe to drive.",
+                  causes=["Secondary O2 heater burned out", "Fuse/wiring"],
+                  check=["Check heater fuse; re-seat the connector near the "
+                         "cat"], pids=[0x15]),
+    # ---- Fuel trim ----
+    "P0171": dict(sev=2, drive="Driveable, but prolonged lean running can "
+                  "cause hesitation and overheated exhaust.",
+                  causes=["Vacuum leak (intake gasket, brake booster hose, "
+                          "PCV)", "Weak fuel pump / clogged filter",
+                          "Dirty injectors", "Exhaust leak fooling the O2"],
+                  check=["Live Data: LTFT above +10% at idle that drops at "
+                         "2500 rpm = vacuum leak",
+                         "Listen for hissing around the intake manifold",
+                         "Check fuel pressure if trims are high at all RPM"],
+                  pids=_TRIM_PIDS),
+    "P0172": dict(sev=2, drive="Driveable; expect poor mileage, fouled "
+                  "plugs, possible cat damage long-term.",
+                  causes=["Leaking injector", "High fuel pressure (bad "
+                          "regulator)", "Stuck-open purge valve",
+                          "Dead primary O2"],
+                  check=["Pull a spark plug — black sooty plugs confirm "
+                         "rich", "Smell fuel in the vacuum line to the "
+                         "pressure regulator (= leaking diaphragm)"],
+                  pids=_TRIM_PIDS),
+    # ---- Misfires ----
+    "P0300": dict(sev=3, drive="Drive gently and fix soon — raw fuel from "
+                  "misfires destroys the catalytic converter.",
+                  causes=["Worn plugs/wires/cap/rotor (check first on this "
+                          "engine)", "Vacuum leak", "Low fuel pressure",
+                          "Low compression"],
+                  check=["Tune-up parts first: plugs, wires, cap, rotor",
+                         "Watch fuel trims — big positive = lean misfire"],
+                  pids=_MISFIRE_PIDS),
+    "P0325": dict(sev=2, drive="Driveable; the ECU retards timing as a "
+                  "precaution, so power and mileage drop.",
+                  causes=["Knock sensor failed (common with age)",
+                          "Wiring open under the intake manifold"],
+                  check=["Check the single-wire connector under the intake "
+                         "manifold"], pids=[0x0E, 0x0C, 0x05]),
+    "P0335": dict(sev=3, drive="Car may stall or not restart — address "
+                  "promptly.",
+                  causes=["CKP sensor (inside distributor on this engine)",
+                          "Distributor wiring"],
+                  check=["On a '99 Civic the CKP/TDC/CYP sensors live in "
+                         "the distributor — inspect its connectors; "
+                         "distributor replacement often fixes all three "
+                         "sensor codes"],
+                  pids=[0x0C]),
+    "P0340": dict(sev=3, drive="May stall / crank-no-start. Fix promptly.",
+                  causes=["CMP sensor in the distributor", "Wiring"],
+                  check=["Same distributor diagnosis as P0335"],
+                  pids=[0x0C]),
+    # ---- EGR / cat / EVAP ----
+    "P0401": dict(sev=1, drive="Safe to drive; it's an emissions fault.",
+                  causes=["Clogged EGR passages in the intake manifold "
+                          "(THE classic D16 failure)", "Lazy EGR valve"],
+                  check=["Clean the EGR ports in the intake manifold — "
+                         "there's a well-known Honda service procedure",
+                         "Check the EGR valve moves freely with vacuum"],
+                  pids=[0x0B, 0x0C, 0x0E]),
+    "P0420": dict(sev=1, drive="Safe to drive; will fail smog.",
+                  causes=["Worn catalytic converter", "Lazy secondary O2 "
+                          "reading like a bad cat", "Exhaust leak"],
+                  check=["Compare O2 sensors in Live Data: if B1S2 mirrors "
+                         "B1S1's fast switching when warm, the cat is weak",
+                         "Rule out exhaust leaks and O2 sensor age first — "
+                         "cheaper than a cat"],
+                  pids=[0x14, 0x15, 0x05]),
+    "P0441": dict(sev=1, drive="Safe to drive.",
+                  causes=["Purge valve stuck/blocked", "Cracked purge lines"],
+                  check=["Follow the purge line from the canister (by the "
+                         "fuel tank) to the throttle body"],
+                  pids=[0x06, 0x07]),
+    "P0443": dict(sev=1, drive="Safe to drive.",
+                  causes=["Purge solenoid unplugged or failed"],
+                  check=["Re-seat the purge solenoid connector"],
+                  pids=[]),
+    "P0455": dict(sev=1, drive="Safe to drive.",
+                  causes=["Loose or bad gas cap (check first!)",
+                          "Cracked EVAP hose", "Canister vent valve"],
+                  check=["Tighten the gas cap until it clicks, clear the "
+                         "code, drive a few days — if it stays gone, done"],
+                  pids=[]),
+    "P0457": dict(sev=1, drive="Safe to drive.",
+                  causes=["Gas cap left loose after refueling"],
+                  check=["Tighten the cap; inspect its rubber seal"],
+                  pids=[]),
+    # ---- Idle / speed / electrical ----
+    "P0500": dict(sev=2, drive="Driveable; speedometer and cruise may not "
+                  "work, automatics shift poorly.",
+                  causes=["VSS on the transmission failed", "Cluster wiring"],
+                  check=["Does the speedometer work? If dead too, suspect "
+                         "the VSS on top of the transaxle"],
+                  pids=[0x0D, 0x0C]),
+    "P0505": dict(sev=2, drive="Driveable; idle may surge, hunt or stall.",
+                  causes=["Dirty IAC/EACV valve (very common)",
+                          "Vacuum leak", "Low coolant (air pocket through "
+                          "the IAC coolant passage)"],
+                  check=["Remove and clean the IAC valve with throttle-body "
+                         "cleaner", "Burp the cooling system"],
+                  pids=[0x0C, 0x0B, 0x11, 0x05]),
+    "P0506": dict(sev=1, drive="Driveable.",
+                  causes=["Dirty IAC", "Carbon-clogged throttle body"],
+                  check=["Clean the throttle body and IAC"],
+                  pids=[0x0C, 0x0B, 0x11]),
+    "P0507": dict(sev=1, drive="Driveable.",
+                  causes=["Vacuum leak", "IAC stuck open",
+                          "Throttle cable/stop misadjusted"],
+                  check=["Listen for hissing; check the brake booster hose"],
+                  pids=[0x0C, 0x0B, 0x11]),
+    "P0562": dict(sev=3, drive="Risk of stalling/no-restart — test the "
+                  "charging system now.",
+                  causes=["Failing alternator", "Worn battery",
+                          "Corroded battery terminals/grounds"],
+                  check=["Use the Charging/Battery preset in Guided "
+                         "Diagnostics: ~12.6V engine off, 13.5-14.7V "
+                         "running"],
+                  pids=[PID_BATT]),
+    "P0563": dict(sev=3, drive="Stop soon — overvoltage cooks the battery "
+                  "and electronics.",
+                  causes=["Failed voltage regulator (in the alternator)"],
+                  check=["Battery voltage above ~15.1V running confirms it"],
+                  pids=[PID_BATT]),
+    "P0601": dict(sev=3, drive="If it runs, drive minimally; behaviour can "
+                  "be unpredictable.",
+                  causes=["ECM internal fault", "Failing main relay solder "
+                          "joints mimicking ECU faults"],
+                  check=["Check battery/ground connections, then suspect "
+                         "the ECM (used D16 ECUs are cheap)"],
+                  pids=[]),
+    "P0700": dict(sev=2, drive="Driveable but diagnose soon; the "
+                  "transmission computer set a code.",
+                  causes=["See the specific P17xx code accompanying this"],
+                  check=["Read codes again — the paired P17xx code is the "
+                         "real story"],
+                  pids=[0x0D, 0x0C]),
+    "P0740": dict(sev=2, drive="Driveable; lock-up clutch issues hurt "
+                  "highway mileage and may shudder.",
+                  causes=["Lock-up solenoid", "Dirty ATF"],
+                  check=["Change the ATF with genuine Honda fluid first — "
+                         "fixes many '90s Honda A/T complaints"],
+                  pids=[0x0D, 0x0C]),
+    # ---- Honda-specific ----
+    "P1106": dict(sev=1, drive="Safe to drive.",
+                  causes=["BARO sensor (inside the ECM) drift"],
+                  check=["Often accompanies other MAP faults — check those "
+                         "first"], pids=[0x0B]),
+    "P1121": dict(sev=2, drive="Driveable.",
+                  causes=["TPS misadjusted or worn"],
+                  check=["Sweep the throttle in Live Data, watch for "
+                         "dropouts"], pids=[0x11]),
+    "P1122": dict(sev=2, drive="Driveable.",
+                  causes=["TPS misadjusted or worn"],
+                  check=["Sweep the throttle in Live Data, watch for "
+                         "dropouts"], pids=[0x11]),
+    "P1128": dict(sev=2, drive="Driveable.",
+                  causes=["MAP reading low vs throttle — vacuum hose or "
+                          "sensor"],
+                  check=["Inspect the MAP vacuum hose"], pids=[0x0B, 0x11]),
+    "P1129": dict(sev=2, drive="Driveable.",
+                  causes=["MAP reading high vs throttle"],
+                  check=["Inspect the MAP hose and sensor"],
+                  pids=[0x0B, 0x11]),
+    "P1149": dict(sev=2, drive="Safe to drive short-term.",
+                  causes=["Primary O2 sensor aging"],
+                  check=["Watch B1S1 switching speed in Live Data"],
+                  pids=_O2_PIDS),
+    "P1162": dict(sev=2, drive="Safe to drive short-term.",
+                  causes=["Primary O2 sensor circuit"],
+                  check=["Re-seat the connector; check heater fuse"],
+                  pids=_O2_PIDS),
+    "P1163": dict(sev=2, drive="Safe to drive short-term.",
+                  causes=["Primary O2 sensor slow response (aged sensor)"],
+                  check=["Replace the primary O2 if original/old"],
+                  pids=_O2_PIDS),
+    "P1164": dict(sev=2, drive="Safe to drive short-term.",
+                  causes=["Primary O2 range/performance"],
+                  check=["Replace the primary O2 if original/old"],
+                  pids=_O2_PIDS),
+    "P1166": dict(sev=2, drive="Safe to drive.",
+                  causes=["Primary O2 heater circuit"],
+                  check=["Check the O2 heater fuse and connector"],
+                  pids=_O2_PIDS),
+    "P1167": dict(sev=2, drive="Safe to drive.",
+                  causes=["Primary O2 heater system"],
+                  check=["Check the O2 heater fuse and connector"],
+                  pids=_O2_PIDS),
+    "P1259": dict(sev=2, drive="Driveable — VTEC just won't engage (down "
+                  "on top-end power).",
+                  causes=["Low oil level/pressure (check FIRST)",
+                          "Clogged VTEC solenoid screen",
+                          "VTEC pressure switch", "Solenoid wiring"],
+                  check=["Check the oil level NOW — low oil is the #1 cause",
+                         "Remove the VTEC solenoid (2 bolts) and clean its "
+                         "small filter screen"],
+                  pids=[0x0C, 0x11, 0x0E]),
+    "P1297": dict(sev=1, drive="Safe to drive; idle may dip with electrical "
+                  "loads.",
+                  causes=["ELD unit in the under-hood fuse box"],
+                  check=["Turn on headlights+defroster at idle — idle "
+                         "should compensate; ELD units are cheap"],
+                  pids=[0x0C, PID_BATT]),
+    "P1298": dict(sev=1, drive="Safe to drive.",
+                  causes=["ELD unit in the under-hood fuse box"],
+                  check=["Same ELD diagnosis as P1297"],
+                  pids=[0x0C, PID_BATT]),
+    "P1300": dict(sev=3, drive="Drive gently and fix soon — misfires kill "
+                  "catalytic converters.",
+                  causes=["Plugs/wires/cap/rotor", "Vacuum leak",
+                          "Low fuel pressure"],
+                  check=["Tune-up parts first; then watch fuel trims"],
+                  pids=_MISFIRE_PIDS),
+    "P1336": dict(sev=3, drive="May stall; usually distributor-related.",
+                  causes=["CKF sensor (in distributor)", "Wiring"],
+                  check=["Inspect distributor connectors; a reman "
+                         "distributor fixes most of these codes"],
+                  pids=[0x0C]),
+    "P1337": dict(sev=3, drive="May stall or no-start.",
+                  causes=["CKF sensor no signal"],
+                  check=["Same distributor diagnosis as P1336"],
+                  pids=[0x0C]),
+    "P1359": dict(sev=3, drive="May stall; check connectors before parts.",
+                  causes=["Distributor connector loose/disconnected"],
+                  check=["Re-seat both distributor connectors"],
+                  pids=[0x0C]),
+    "P1361": dict(sev=3, drive="Intermittent stall risk.",
+                  causes=["TDC sensor intermittent (distributor)"],
+                  check=["Distributor connectors, then the distributor "
+                         "itself"], pids=[0x0C]),
+    "P1362": dict(sev=3, drive="Often a crank-no-start when active.",
+                  causes=["TDC sensor no signal (distributor)"],
+                  check=["Distributor connectors, then the distributor"],
+                  pids=[0x0C]),
+    "P1381": dict(sev=3, drive="Intermittent stall risk.",
+                  causes=["CYP sensor intermittent (distributor)"],
+                  check=["Distributor connectors, then the distributor"],
+                  pids=[0x0C]),
+    "P1382": dict(sev=3, drive="May stall or no-start.",
+                  causes=["CYP sensor no signal (distributor)"],
+                  check=["Distributor connectors, then the distributor"],
+                  pids=[0x0C]),
+    "P1456": dict(sev=1, drive="Completely safe to drive — emissions-only.",
+                  causes=["Loose/worn gas cap (check FIRST — most common)",
+                          "Fuel tank pressure sensor", "Vent valve by the "
+                          "tank", "Cracked tank-side EVAP hose"],
+                  check=["Tighten the gas cap until it clicks; inspect its "
+                         "seal", "Clear the code and drive a few days — if "
+                         "it returns, the tank-side EVAP system needs a "
+                         "smoke test"],
+                  pids=[]),
+    "P1457": dict(sev=1, drive="Completely safe to drive — emissions-only.",
+                  causes=["EVAP canister vent shut valve (most common for "
+                          "P1457)", "Cracked canister or hoses",
+                          "Two-way valve"],
+                  check=["Inspect the charcoal canister area near the fuel "
+                         "tank for cracked hoses",
+                         "The canister vent shut valve is the usual fix"],
+                  pids=[]),
+    "P1459": dict(sev=1, drive="Safe to drive.",
+                  causes=["Purge flow switch", "Blocked purge line"],
+                  check=["Check the purge line from canister to throttle "
+                         "body for blockage"], pids=[]),
+    "P1486": dict(sev=2, drive="Safe to drive.",
+                  causes=["Stuck-open thermostat"],
+                  check=["Replace the thermostat"], pids=_TEMP_PIDS),
+    "P1491": dict(sev=1, drive="Safe to drive; emissions fault.",
+                  causes=["Clogged EGR passages (the classic D16 fault)",
+                          "Lazy EGR valve"],
+                  check=["Clean the EGR ports in the intake manifold"],
+                  pids=[0x0B, 0x0C]),
+    "P1498": dict(sev=1, drive="Safe to drive.",
+                  causes=["EGR valve lift sensor", "EGR wiring"],
+                  check=["Re-seat the EGR valve connector"], pids=[0x0B]),
+    "P1508": dict(sev=2, drive="Driveable; idle may surge or stall.",
+                  causes=["Dirty/failed IAC valve", "IAC wiring"],
+                  check=["Clean the IAC valve; re-seat its connector"],
+                  pids=[0x0C, 0x0B]),
+    "P1509": dict(sev=2, drive="Driveable; idle may surge or stall.",
+                  causes=["Dirty/failed IAC valve", "IAC wiring"],
+                  check=["Clean the IAC valve; re-seat its connector"],
+                  pids=[0x0C, 0x0B]),
+    "P1519": dict(sev=2, drive="Driveable; idle may surge or stall.",
+                  causes=["IAC valve circuit"],
+                  check=["Clean the IAC valve; check its connector"],
+                  pids=[0x0C, 0x0B]),
+    "P1607": dict(sev=3, drive="Behaviour can be unpredictable.",
+                  causes=["ECM internal fault", "Bad grounds/battery "
+                          "connections mimicking ECM faults"],
+                  check=["Clean battery terminals and engine grounds, clear "
+                         "and re-test before replacing the ECM"],
+                  pids=[]),
+}
+
+# Codes that share diagnosis with a representative entry
+_DTC_ALIASES = {
+    "P0105": "P0106", "P0110": "P0111", "P0115": "P0116", "P0120": "P0121",
+    "P0130": "P0131", "P0132": "P0131", "P0137": "P0136", "P0138": "P0136",
+    "P0139": "P0136", "P0140": "P0136", "P0170": "P0171",
+    "P0301": "P0300", "P0302": "P0300", "P0303": "P0300", "P0304": "P0300",
+    "P0336": "P0335", "P0341": "P0340", "P0404": "P0401", "P0442": "P0455",
+    "P0446": "P0443", "P0456": "P0455", "P0501": "P0500", "P0560": "P0562",
+    "P0603": "P0601", "P0605": "P0601", "P1107": "P1106", "P1108": "P1106",
+    "P1165": "P1164", "P1366": "P1361", "P1367": "P1362",
+}
+
+
+def dtc_info(code):
+    """Full info dict for any code, with sensible fallbacks."""
+    info = DTC_INFO.get(code) or DTC_INFO.get(_DTC_ALIASES.get(code, ""))
+    out = {
+        "code": code,
+        "desc": describe_dtc(code),
+        "severity": 2,
+        "severity_name": "Moderate",
+        "drive": "No drivability data for this code — if the engine runs "
+                 "normally it is usually OK for short trips; diagnose soon.",
+        "causes": [],
+        "check": ["Look up this code in the Honda service manual"],
+        "pids": [],
+    }
+    if info:
+        out["severity"] = info["sev"]
+        out["severity_name"] = SEVERITY_NAMES[info["sev"]]
+        out["drive"] = info["drive"]
+        out["causes"] = info["causes"]
+        out["check"] = info["check"]
+        out["pids"] = [p for p in info["pids"]]
+    return out
+
+
 # Mode 05 test IDs (O2 sensor monitoring, non-CAN)
 MODE05_TIDS = {
     0x01: "Rich-to-lean threshold voltage",
